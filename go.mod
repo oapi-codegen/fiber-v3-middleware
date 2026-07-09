@@ -1,4 +1,4 @@
-module github.com/oapi-codegen/fiber-middleware
+module github.com/oapi-codegen/fiber-v3-middleware
 
 go 1.24.4
 
