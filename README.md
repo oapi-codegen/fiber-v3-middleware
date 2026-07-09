@@ -7,7 +7,4 @@ Middleware for the [Fiber v3 web server](https://github.com/gofiber/fiber) for u
 > [!NOTE]
 > Using Fiber v2? You want [`oapi-codegen/fiber-middleware`](https://github.com/oapi-codegen/fiber-middleware) instead.
 
-> [!WARNING]
-> No release has been tagged yet. This notice will be removed with the first release.
-
 Licensed under the Apache-2.0.
