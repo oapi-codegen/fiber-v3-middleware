@@ -432,3 +432,153 @@ func TestOapiRequestValidatorWithOptionsMultiErrorAndCustomHandler(t *testing.T)
 		called = false
 	}
 }
+
+func TestFilterOptions(t *testing.T) {
+	t.Run("nil options keep the validated value", func(t *testing.T) {
+		got := filterOptions(nil)
+		require.NotNil(t, got)
+		assert.True(t, got.KeepValidatedValue)
+	})
+
+	t.Run("zero options keep the validated value", func(t *testing.T) {
+		got := filterOptions(&Options{})
+		require.NotNil(t, got)
+		assert.True(t, got.KeepValidatedValue)
+	})
+
+	t.Run("DiscardValidatedValue turns it off", func(t *testing.T) {
+		got := filterOptions(&Options{DiscardValidatedValue: true})
+		require.NotNil(t, got)
+		assert.False(t, got.KeepValidatedValue)
+	})
+
+	t.Run("DiscardValidatedValue overrides Options.KeepValidatedValue", func(t *testing.T) {
+		got := filterOptions(&Options{
+			Options:               openapi3filter.Options{KeepValidatedValue: true},
+			DiscardValidatedValue: true,
+		})
+		assert.False(t, got.KeepValidatedValue)
+	})
+
+	t.Run("other fields are preserved and the caller's struct is not mutated", func(t *testing.T) {
+		authFunc := func(context.Context, *openapi3filter.AuthenticationInput) error { return nil }
+		options := &Options{
+			Options: openapi3filter.Options{
+				ExcludeRequestBody:  true,
+				MultiError:          true,
+				SkipSettingDefaults: true,
+				AuthenticationFunc:  authFunc,
+			},
+		}
+
+		got := filterOptions(options)
+
+		assert.True(t, got.KeepValidatedValue)
+		assert.True(t, got.ExcludeRequestBody)
+		assert.True(t, got.MultiError)
+		assert.True(t, got.SkipSettingDefaults)
+		assert.NotNil(t, got.AuthenticationFunc)
+
+		assert.NotSame(t, &options.Options, got, "filterOptions must return a copy")
+		assert.False(t, options.Options.KeepValidatedValue, "caller's Options must not be mutated")
+		assert.True(t, options.Options.ExcludeRequestBody)
+	})
+}
+
+// TestValidatedValueSetting checks that requests validate the same way with
+// KeepValidatedValue on (the default) and off (DiscardValidatedValue), and
+// that the fiber handler still sees the original request body either way.
+func TestValidatedValueSetting(t *testing.T) {
+	swagger, err := openapi3.NewLoader().LoadFromData(testSchema)
+	require.NoError(t, err, "Error initializing swagger")
+
+	configs := []struct {
+		name    string
+		options *Options
+	}{
+		{name: "nil options", options: nil},
+		{name: "default options", options: &Options{}},
+		{name: "DiscardValidatedValue", options: &Options{DiscardValidatedValue: true}},
+	}
+
+	requests := []struct {
+		name       string
+		method     string
+		url        string
+		body       interface{}
+		wantStatus int
+		wantCalled bool
+	}{
+		{
+			name:       "valid body",
+			method:     http.MethodPost,
+			url:        "https://deepmap.ai/resource",
+			body:       map[string]interface{}{"name": "Marcin"},
+			wantStatus: http.StatusNoContent,
+			wantCalled: true,
+		},
+		{
+			name:       "invalid body",
+			method:     http.MethodPost,
+			url:        "https://deepmap.ai/resource",
+			body:       map[string]interface{}{"name": 7},
+			wantStatus: http.StatusBadRequest,
+			wantCalled: false,
+		},
+		{
+			name:       "valid query parameter",
+			method:     http.MethodGet,
+			url:        "https://deepmap.ai/resource?id=50",
+			wantStatus: http.StatusNoContent,
+			wantCalled: true,
+		},
+		{
+			name:       "invalid query parameter",
+			method:     http.MethodGet,
+			url:        "https://deepmap.ai/resource?id=500",
+			wantStatus: http.StatusBadRequest,
+			wantCalled: false,
+		},
+	}
+
+	for _, cfg := range configs {
+		t.Run(cfg.name, func(t *testing.T) {
+			app := fiber.New()
+			app.Use(OapiRequestValidatorWithOptions(swagger, cfg.options))
+
+			var called bool
+			var handlerBody []byte
+			handler := func(c fiber.Ctx) error {
+				called = true
+				handlerBody = append([]byte(nil), c.Body()...)
+				return c.SendStatus(http.StatusNoContent)
+			}
+			app.Get("/resource", handler)
+			app.Post("/resource", handler)
+
+			for _, tc := range requests {
+				t.Run(tc.name, func(t *testing.T) {
+					called = false
+					handlerBody = nil
+
+					var res *http.Response
+					if tc.method == http.MethodPost {
+						res = doPost(t, app, tc.url, tc.body)
+					} else {
+						res = doGet(t, app, tc.url)
+					}
+
+					assert.Equal(t, tc.wantStatus, res.StatusCode)
+					assert.Equal(t, tc.wantCalled, called)
+
+					if tc.wantCalled && tc.body != nil {
+						want, err := json.Marshal(tc.body)
+						require.NoError(t, err)
+						assert.JSONEq(t, string(want), string(handlerBody),
+							"handler must see the original request body")
+					}
+				})
+			}
+		})
+	}
+}

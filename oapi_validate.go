@@ -60,6 +60,21 @@ type Options struct {
 	ParamDecoder      openapi3filter.ContentParameterDecoder
 	UserData          interface{}
 	MultiErrorHandler MultiErrorHandler
+	// DiscardValidatedValue turns off openapi3filter.Options.KeepValidatedValue,
+	// which this middleware enables by default. With it enabled, the request body
+	// seen by handlers exposes the value that was validated through a
+	// ValidatedValue() method, so a handler (for example an oapi-codegen strict
+	// server) can bind that value instead of decoding the body a second time.
+	// Set this to drop the decoded value after validation, for instance to limit
+	// memory retention for very large request bodies.
+	//
+	// Options.Options.KeepValidatedValue is overridden by this setting.
+	//
+	// Note: this middleware currently validates a copy of the request, so fiber
+	// handlers do not yet observe the validated value; the setting is kept for
+	// consistency with the other oapi-codegen middlewares and for a future
+	// change that exposes it.
+	DiscardValidatedValue bool
 }
 
 // OapiRequestValidatorWithOptions creates a validator from a swagger object, with validation options
@@ -117,6 +132,7 @@ func ValidateRequestFromContext(c fiber.Ctx, router routers.Router, options *Opt
 		Request:    r,
 		PathParams: pathParams,
 		Route:      route,
+		Options:    filterOptions(options),
 	}
 
 	// Pass the fiber context into the request validator, so that any callbacks
@@ -124,7 +140,6 @@ func ValidateRequestFromContext(c fiber.Ctx, router routers.Router, options *Opt
 	requestContext := context.WithValue(context.Background(), ctxKeyFiberContext{}, c) //nolint:staticcheck
 
 	if options != nil {
-		requestValidationInput.Options = &options.Options
 		requestValidationInput.ParamDecoder = options.ParamDecoder
 		requestContext = context.WithValue(requestContext, ctxKeyUserData{}, options.UserData) //nolint:staticcheck
 	}
@@ -153,6 +168,18 @@ func ValidateRequestFromContext(c fiber.Ctx, router routers.Router, options *Opt
 		}
 	}
 	return nil
+}
+
+// filterOptions returns the openapi3filter.Options used to validate a request.
+// It works on a copy, so the caller's Options are never mutated, and enables
+// KeepValidatedValue unless Options.DiscardValidatedValue is set.
+func filterOptions(options *Options) *openapi3filter.Options {
+	if options == nil {
+		return &openapi3filter.Options{KeepValidatedValue: true}
+	}
+	filterOpts := options.Options
+	filterOpts.KeepValidatedValue = !options.DiscardValidatedValue
+	return &filterOpts
 }
 
 // GetFiberContext gets the fiber context from within requests. It returns
